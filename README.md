@@ -1,233 +1,35 @@
-monitor
+`monitor`
 =======
-***TL;DR***: Bluetooth-based passive presence detection of beacons, cell phones, and any other bluetooth device. The system is useful for [mqtt-based](http://mqtt.org) home automation. Installation instructions [here.](#installation-instructions-raspbian-lite-stretch) Getting started instructions and description [here.](#getting-started)
+***TL;DR***: Passive Bluetooth presence detection of beacons, cell phones, and other Bluetooth devices. Useful for [mqtt-based](http://mqtt.org) home automation, especially when the script runs on multiple devices, distributed throughout a property. 
 
-____
+![version](https://img.shields.io/badge/version-0.2-green.svg?maxAge=2592000) ![mosquitto](https://img.shields.io/badge/mosquitto-1.5+-blue.svg?maxAge=2592000)
 
-### *Table Of Contents*
+[**Frequently Asked Questions**](https://github.com/andrewjfreyer/monitor/blob/master/support/README.md)
 
-  * [**Highlights**](#highlights)
-  
-  * [**Summary**](#summary)
-  
-  * [**Background on BTLE**](#background-on-btle) 
-    
-    * [Connectable Devices](#connectable-devices) ***TL;DR***: Some bluetooth devices only advertise an ability to connect, but do not publicly advertise their identity. These devices need to be affirmatively scanned by a host to verify their identity. *Example: bluetooth-enabled phones*
-    
-    * [Beacon Devices](#beacon-devices) ***TL;DR***: Other bluetooth devices advertise both (1) an ability to connect and (2) a unique identifier that can be used to identify a specific device. *Example: BTLE beacons*
+<details><summary><b>Installation Instructions</b></summary>
 
-    * [Using Advertisements to Trigger "Name" Scans](#using-advertisements-to-trigger-name-scans) ***TL;DR***: We can use a random advertisement (from an unknown device) as a trigger for scanning for a known bluetooth device. Neat!
+<br>
 
-  * [**Example with Home Assistant**](#example-with-home-assistant) 
+<details><summary><i>Set Up Raspberry Pi From Scratch</i></summary>
 
-  * [**Installing on a Raspberry Pi Zero W**](#installation-instructions-raspbian-lite-stretch) 
 
-  * [**Getting Started**](#getting-started) 
-____
+# Installation Instructions for Raspberry Pi Zero W
 
-<h1>Highlights</h1>
+## Setup of SD Card
 
-* More granular, responsive, and reliable than device-reported GPS or arp/network-based presence detection 
-
-* Cheaper, more reliable, more configurable, and less spammy than [Happy Bubbles](https://www.happybubbles.tech) (which, unfortunately, is no longer operating as of 2018 because of [tarrifs](https://www.happybubbles.tech/blog/post/2018-hiatus/)) or [room-assistant](https://github.com/mKeRix/room-assistant) 
-
-* Does not require any app to be running or installed on any device 
-
-* Does not require device pairing 
-
-* Designed to run as service on a [Raspberry Pi Zero W](https://www.raspberrypi.org/products/raspberry-pi-zero-w/) on Raspbian  Lite Stretch.
-
-<h1>Summary</h1>
-
-A JSON-formatted MQTT message is reported to a specified broker whenever a specified bluetooth device responds to a **name** query. Optionally, a JSON-formatted MQTT message is reported to the broker whenever a public device or an iBeacon advertises its presence. A configuration file defines 'known_static_addresses'. These should be devices that do not advertise public addresses, such as cell phones, tablets, and cars. You do not need to add iBeacon mac addresses into this file, since iBeacons broadcast their own UUIDs consistently. 
-
-___
-
-<h1>Background on BTLE</h1>
-
-The BTLE 4.0 spec was designed to make connecting bluetooth devices simpler for the user. No more pin codes, no more code verifications, no more “discovery mode” - for the most part. 
-
-It was also designed to be much more private than previous bluetooth specs. But it’s hard to maintain privacy when you want to be able to connect to an unknown device without substantive user intervention, so a compromise was made. 
-
-The following is oversimplified and not technically accurate in most cases, but should give the reader a gist of how `monitor` determines presence. 
-
-<h2>Connectable Devices</h2>
-
-BTLE devices that can exchange information with other devices advertise their availability to connect to other devices, but the “mac” address they use to refer to themselves will be random, and will periodically change. This prevents bad actors from tracking your phone via passive bluetooth monitoring. A bad actor could track the random mac that your phone broadcasts, but that mac will change every few moments to a completely different address, making the tracking data useless.
-
-Also part of the BTLE spec (and pre-LE spec) is a feature called a `name` request. A device can request a human-readable name of a device without connecting to that device *but only if the requesting device affirmatively knows the hardware mac address of the target device.* To see an example of this, try to connect to a new bluetooth device using your Android Phone or iPhone - you'll see a human-readable name of devices around you, some of which are not under your control. All of these devices have responded to a `name` request sent by your phone (or, alternatively, they have included their name in an advertisement received by your phone).
-
-<h2>Beacon Devices</h2>
-
-The BTLE spec was used by Apple, Google, and others to create additional standards (e.g., iBeacon, Eddystone, and so on). These "beacon" standards didn't care that the MAC addresses that were periodically broadcast were random. Instead, these devices would encode additional information into the broadcast data. Importantly, most devices that conform to these protocols will consistenly broadcast a UUID that conforms to the 8-4-4-4-12 format defined by [IETC RFC4122](http://www.ietf.org/rfc/rfc4122.txt).
-
-<h2>Using Advertisements to Trigger "Name" Scans</h2>
-
-So, we now know a little bit more about ‘name’ requests which need a previously-known hardware mac address and ‘random advertisements’ which include ostensibly useless mac addresses that change every few moments.
-
-To see these things in action, you can use hcitool and hcidump. For example, to see your phone respond to a ‘name’ request, you can type this command:
-
-```hcitool name 00:00:00:00:00:00```
-
-Of course, replace your hardware bluetooth mac address with the ```00:00…``` above.
-
-To see your phone's random advertisements (along with other random advertisements), you will need to launch a bluetooth LE scan and, separately, monitor the output from your bluetooth radio using hcidump
-
-```sudo hcitool lescan & ; sudo hcidump --raw```
-
-This command will output the faw BTLE data that is received by your bluetooth hardware while the `hcidump` process is operating. Included in this data are **ADV_RAND** responses.
-
-The `monitor` script, with default settings, will request a name from your owner device *after a new random advertisement is detected.* If there are no devices that randomly advertise, monitor will never scan for new devices, clearing 2.4GHz spectrum for Wi-Fi use. The `monitor` script will also detect and report the UUID of nearby iBeacons. Below is a simplified flowchart showing the operation of `monitor`, showing the flows for both detection of arrival and detection of departure:
-
-<img src="https://user-images.githubusercontent.com/6710151/44170856-d9d53500-a095-11e8-9d21-7e5885397df5.png" alt="monitor_flowchart" width="750" align="middle">
-
-Here's the `monitor` helpfile, as reference:
-
-```
-monitor.sh
-
-Andrew J Freyer, 2018
-GNU General Public License
-
------ Summary -----
-
-This is a shell script and a set of helper scripts that passively 
-monitor for specified bluetooth devices, iBeacons, and bluetooth 
-devices that publicly advertise. Once a specified device, iBeacon, or 
-publicly device is found, a report is made via MQTT to a specified 
-MQTT broker. When a previously-found device expires or is not found, 
-a report is made via MQTT to the broker that the device has departed. 
-
------ Background ----- 
-
-By default, most BTLE devices repeatedly advertise their presence with a 
-random mac address at a random interval. The randomness is to maintain 
-privacy and to prevent device tracking by bad actors or advertisers. 
-
------ Description ----- 
-
-By knowing the static bluetooth mac address of a specified 
-bluetooth device before hand, a random advertisement can be used 
-as a trigger to scan for the presence of that known device. This 
-construction enables the script to rapidly detect the arrival of 
-a specified bluetooth device, while reducing the number of times 
-an affirmative scan operation is required (which may interfere 
-with 2.4GHz Wi-Fi).
-
-
-usage:
-
-  monitor -h  show usage information
-  monitor -R  redact private information from logs
-  monitor -m  send heartbeat signal
-  monitor -C  clean retained messages from MQTT broker
-  monitor -e  report bluetooth environment periodically via mqtt at topic: \$mqtt_topicpath/environment 
-  monitor -E  report scan status messages: \$mqtt_topicpath/scan/[arrive|depart]/[start|end]
-  monitor -c  clean manufacturer cache and generic beacon cache
-  monitor -v  print version number
-  monitor -d  restore to default settings
-  monitor -u  update 'monitor.service' to current command line settings
-      (excluding -u and -d flags)
-
-  monitor -r  repeatedly scan for arrival & departure of known devices
-  monitor -f  format MQTT topics with only letters and numbers
-  monitor -b  report iBeacon advertisements and data
-  monitor -a  report all known device scan results, not just changes
-  monitor -x  retain mqtt status messages
-  monitor -g  report generic bluetooth advertisements
-  monitor -t[adr] scan for known devices only on mqtt trigger messages:
-        a \$mqtt_topicpath/scan/ARRIVE (defined in MQTT preferences file)
-        d \$mqtt_topicpath/scan/DEPART (defined in MQTT preferences file)
-        r send ARRIVE or DEPART messages to trigger other devices to scan 
-  
-
-```
-___
-
-<h1>Example with Home Assistant</h1>
-
-I have three **raspberry pi zero w**s throughout the house. We spend most of our time on the first floor, so our main 'sensor' is the first floor. Our other 'sensors' on the second and third floor are set up to trigger only, with option ```-t```. 
-
-The first floor constantly monitors for advertisements from generic bluetooth devices and ibeacons. The first floor also monitors for random advertisements from other bluetooth devices, which include our phones. When a "new" random device is seen (*i.e.,* an advertisement is received), the first floor pi then scans for the fixed address of our cell phones. These addresses are are stored in the **known_static_addresses** file. If one of those devices is seen, an mqtt message is sent to Home Assistant reporting that the scanned phone is "home" with a confidence of 100%. In addition, an mqtt message is sent to the second and third floor to trigger a scan on those floors as well. 
-
-When we leave the house, we use either the front door or the garage door to trigger an mqtt trigger of ```[topic_path]/scan/depart``` after a ten second delay to trigger a departure scan of our devices. The ten second delay gives us a chance to get out of bluetooth range before a "departure" scan is triggered. Different houses/apartments will probably need different delays. 
-
-[Home Assistant](https://www.home-assistant.io) receives mqtt messages and stores the values as input to a number of [mqtt sensors](https://www.home-assistant.io/components/sensor.mqtt/). Output from these sensors can be averaged to give an accurate numerical occupancy confidence.  
-
-For example (note that 00:00:00:00:00:00 is an example address - this should be your phone's address):
-
-
-```
-- platform: mqtt
-  state_topic: 'location/first floor/00:00:00:00:00:00'
-  value_template: '{{ value_json.confidence }}'
-  unit_of_measurement: '%'
-  name: 'First Floor'
-
-- platform: mqtt
-  state_topic: 'location/second floor/00:00:00:00:00:00'
-  value_template: '{{ value_json.confidence }}'
-  unit_of_measurement: '%'
-  name: 'Second Floor'
-
-- platform: mqtt
-  state_topic: 'location/third floor/00:00:00:00:00:00'
-  value_template: '{{ value_json.confidence }}'
-  unit_of_measurement: '%'
-  name: 'Third Floor'
-
-```
-
-These sensors can be combined/averaged using a [min_max](https://www.home-assistant.io/components/sensor.min_max/):
-
-```
-- platform: min_max
-  name: "Home Occupancy Confidence of 00:00:00:00:00:00"
-  type: max
-  round_digits: 0
-  entity_ids:
-    - sensor.third_floor
-    - sensor.second_floor
-    - sensor.first_floor
-```
-
-Then I use the entity **sensor.home_occupancy_confidence** in automations to control the state of an **input_boolean** that represents a very high confidence of a user being home or not. 
-
-As an example:
-
-```
-- alias: Occupancy 
-  hide_entity: true
-  trigger:
-    - platform: numeric_state
-      entity_id: sensor.home_occupancy_confidence
-      above: 10
-  action:
-    - service: homeassistant.turn_on
-      data:
-        entity_id: input_boolean.occupancy
-```
-
-___
-
-
-<h1>Installation Instructions (Raspbian Lite Stretch):</h1>
-
-<h2>Setup of SD Card</h2>
-
-1. Download latest version of **rasbpian lite stretch** [here](https://downloads.raspberrypi.org/raspbian_lite_latest)
+1. Download latest version of **raspbian** [here](https://downloads.raspberrypi.org/raspbian_lite_latest)
 
 2. Download etcher from [etcher.io](https://etcher.io)
 
-3. Image **raspbian lite stretch** to SD card. [Instructions here.](https://www.raspberrypi.org/magpi/pi-sd-etcher/)
+3. Image **raspbian lite buster** to SD card. [Instructions here.](https://www.raspberrypi.org/magpi/pi-sd-etcher/)
 
 4. Mount **boot** partition of imaged SD card (unplug it and plug it back in)
 
-5. **[ENABLE SSH]** Create blank file, without any extension, in the root directory called **ssh**
+5. **To enable ssh,** create blank file, without any extension, in the root directory called **ssh**
 
-6. **[SETUP WIFI]** Create **wpa_supplicant.conf** file in root directory and add Wi-Fi details for home Wi-Fi:
+6. **To setup Wi-Fi**, create **wpa_supplicant.conf** file in root directory and add Wi-Fi details for home Wi-Fi:
 
-```
+```bash
 country=US
     ctrl_interface=DIR=/var/run/wpa_supplicant GROUP=netdev
     update_config=1
@@ -239,48 +41,43 @@ network={
 }
 ```
 
- 7. **[FIRST STARTUP]** Insert SD card and power on Raspberry Pi Zero W. On first boot, the newly-created **wpa_supplicant.conf** file and **ssh** will be moved to appropriate directories. Find the IP address of the Pi via your router. One method is scanning for open ssh ports (port 22) on your local network:
-```
-nmap 192.168.1.0/24 -p 22
-```
+ 7. **On the first startup,** insert SD card and power on Raspberry Pi Zero W. On first boot, the newly-created **wpa_supplicant.conf** file and **ssh** will be moved to appropriate directories. Find the IP address of the Pi via your router. 
 
-<h2>Configuration and Setup of Raspberry Pi Zero W</h2>
+## Configuration and Setup
 
-1. SSH into the Raspberry Pi (password: raspberry):
-```
+1. SSH into the Raspberry Pi (default password: raspberry):
+```bash
 ssh pi@theipaddress
 ```
 
 2. Change the default password:
-```
+```bash 
 sudo passwd pi
 ```
 
-3. **[PREPARATION]** Update and upgrade:
+3. Update and upgrade:
 
-```
+```bash
 sudo apt-get update
 sudo apt-get upgrade -y
 sudo apt-get dist-upgrade -y
-sudo apt-get install rpi-update
-sudo rpi-update
 sudo reboot
 ```
 
-5. **[BLUETOOTH]** Install Bluetooth Firmware, if necessary:
-```
-#install bluetooth drivers for Pi Zero W
+5. Install Bluetooth Firmware, if necessary:
+```bash
+#install Bluetooth drivers for Pi Zero W
 sudo apt-get install pi-bluetooth
 
 ```
 
-6. **[REBOOT]**
-```
+6. Reboot:
+```bash
 sudo reboot
 ```
 
-7. **[INSTALL MOSQUITTO]**
-```
+7. Install Mosquitto 1.5+ **(important step!)**:
+```bash
 
 # get repo key
 wget http://repo.mosquitto.org/debian/mosquitto-repo.gpg.key
@@ -290,16 +87,21 @@ sudo apt-key add mosquitto-repo.gpg.key
 
 #download appropriate lists file 
 cd /etc/apt/sources.list.d/
-sudo wget http://repo.mosquitto.org/debian/mosquitto-stretch.list
+sudo wget http://repo.mosquitto.org/debian/mosquitto-buster.list
 
 #update caches and install 
 apt-cache search mosquitto
 sudo apt-get update
-sudo aptitude install libmosquitto-dev mosquitto mosquitto-clients
+sudo apt-get install -f libmosquitto-dev mosquitto mosquitto-clients libmosquitto1
 ```
+</details>
 
-8. **[INSTALL MONITOR]**
-```
+<details><summary><i>Monitor Setup</i></summary>
+
+## Setup `monitor`
+
+1. Clone `monitor` git:
+```bash
 #install git
 cd ~
 sudo apt-get install git
@@ -307,309 +109,444 @@ sudo apt-get install git
 #clone this repo
 git clone git://github.com/andrewjfreyer/monitor
 
-#enter monitor directory
+#enter `monitor` directory
 cd monitor/
+
+#(optional) switch to beta branch for latest updates and features (may be unstable)
+git checkout beta       
+
 ```
 
-9. **[INITIAL RUN]** run monitor:
+2. Initial run:
 
-```sudo bash monitor.sh```
+Configuration files will be created with default preferences. Any executables that are not installed will be reported. All can be installed via `apt-get install ...`
 
-Configuration files will be created with default preferences. Any executables that are not installed will be reported. All can be installed via ```apt-get intall ...```
-
-
-10. **[CONFIGURE MQTT]** edit **mqtt_preferences**:
+```bash 
+sudo bash monitor.sh
 ```
+
+
+3. Edit **mqtt_preferences** file:
+
+```bash
 sudo nano mqtt_preferences
 ```
 
-11. **[CONFIGURE MONITOR]** edit **known_static_addresses**: 
+4. Edit **known_static_addresses** (phones, laptops, some smart watches): 
 
-```
+```bash
 sudo nano known_static_addresses
 ```
 
-12. **[READ HELPFILE]**:
+Alternatively, send an mqtt message to `monitor/setup/ADD STATIC DEVICE` with a message including a mac address and an alias separated by a space:
 
-```
+
+**topic:** `monitor/setup/ADD STATIC DEVICE` 
+**message:** 00:11:22:33:44:55 alias
+
+
+Use, `monitor/setup/DELETE STATIC DEVICE` with a message containing a mac address to remove a device from all `monitor` nodes.
+
+5. Read helpfile:
+
+```bash
 sudo bash monitor.sh -h
 ```
 
-That's it. Your broker should be receiving messages and the monitor service will restart each time the Raspberry Pi boots. As currently configured, you should run `sudo bash monitor.sh` a few times from your command line to get a sense of how the script works. 
+Now the basic setup is complete. Your broker should be receiving messages and the `monitor` service will restart each time the Raspberry Pi boots. As currently configured, you should run `sudo bash monitor.sh` a few times from your command line to get a sense of how the script works. 
 
-____
+</details>
 
-### *Getting Started*
+___
 
-  * [**Cell Phone Tracking**](#cell-phone-or-laptop)
+</details>
 
-  * [**Smartwatch/Fitness Band**](#smart-watch--fitness-band--bluetooth-beacon)
+<details><summary><b>Background & Technical Details</b></summary>
 
-  * [**Advanced Configuration**](#advanced-configurations)
+# *Highlights*
 
-Ok, here we go! Please note that this documentation is a work in progress - more content will be added later!
+`monitor` sends a JSON-formatted MQTT message including a confidence value from 0 to 100 to a specified broker when a specified Bluetooth device responds to a `name` query. By default, `name` queries are triggered after receiving an anonymous advertisement from a previously-unseen device (e.g., a device in peripheral mode advertising an ability to connect). 
 
-<h2>Cell Phone or Laptop</h2>
-
-Tracking presence of cell phones is the original purpose of `monitor` and `presence`. It's a particularly good choice because most of us always have our phones and we don't have to replace batteries periodically like we do with beacon devices. 
-
-First, we're going to need the Bluetooth Mac address from each phone that you want to track. This can be found in Settings on your phone. For example, on an iPhone look in Settings > General > About and scroll about halfway down. Make sure to copy the *Bluetooth* address and not the Wi-Fi address. 
-
-Now, `ssh` to the pi that's running the script. 
-
-```ssh username@ipaddress```
-
-Stop the script while we're working with preferences and options: 
-
+Example JSON package:
 ```
-sudo systemctl stop monitor.service
-```
-
-Change directory into `monitor`:
-
-`cd monitor`
-
-And make sure that you're running the most recent version: 
-
-`git pull`
-
-Now, add that address to your `known_static_addresses` file created when you ran `monitor` the first time. To do this from the command line, you can use your favorite text editor. I prefer `nano`:
-
-```
-sudo nano known_static_addresses
+topic: monitor/{{name of monitor install}}/{{mac address}}
+message: {
+    "id":"{{mac address}}",
+    "confidence":"{{ranging from 0-100}}",
+    "name":"{{if available}}",
+    "manufacturer":{{if available}}",
+    "type":"KNOWN_MAC",
+    "retained":"{{message retained?}}",
+    "timestamp":"{{formatted date at which message is sent}}",
+    "version":"{{monitor version}}"
+ }
 ```
 
-Add the mac address that you copied for your phone at the end of the file. Next to the mac address, you can add a "nickname" or a hash-prepended comment if you like. For example: 
+In addition, optionally, a JSON-formatted MQTT message can be reported to the same broker whenever a publicly-advertising beacon device or an iBeacon device advertises. 
 
+Example JSON package:
 ```
-00:11:22:33:44:55 Andrew's iPhone #this is a comment and everything after the hashmark is ignored
-```
+topic: monitor/{{name of monitor install}}/{{mac address or ibeacon uuid}}
+message: {
+    "id":"{{mac address or ibeacon uuid}}",
+    "report_delay":"{{delay from first detection to this message in seconds}}",
+    "flags":"{{GAP flags}}",
+    "movement":"stationary",
+    "confidence":"{{ranging from 0-100}}",
+    "name":"{{if available}}",
+    "power":"{{if available}}",
+    "rssi":"{{if available}}",
+    "mac":"{{if ibeacon, the current mac address associated with the uuid}}",
+    "manufacturer":{{if available}}",
+    "type":"{{GENERIC_BEACON_PUBLIC or APPLE_IBEACON}},
+    "retained":"{{message retained?}}",
+    "timestamp":"{{formatted date at which message is sent}}",
+    "version":"{{monitor version}}"
+ }
+ ```
+___
 
-Do this with all other cell phone/laptop devices that you'd like to track via mqtt messages posted/formatted like this:
+# *Oversimplified Analogy of the Bluetooth Presence Problem*
 
-```
-topic:    location/first floor/00:11:22:33:44:55
-message:  {
-  retain: false
-  version : 0.1.666
-  address : 00:11:22:33:44:55
-  confidence : 0
-  name : Andrew's iPhone
-  timestamp : Fri Sep 28 2018 22:41:11 GMT+0000 (UTC)
-  manufacturer : Apple, Inc.
-  type : KNOWN_MAC
-}
-```
+Imagine you're blindfolded in a large room with other people. We want to find out who of your friends **is** present and who of your friends **isn't** present:
 
-In the above example, the confidence is 0, meaning that the device is not home. Phrased another way, the script is 0% confident that the device is home. When the phone arrives home, the message changes to: 
+![First Picture](https://i.imgur.com/FOubz6T.png)
 
+Some of the people in the room periodically make sounds (e.g., eating a chip, sneeze, cough, etc.), others sit quietly and don’t make a sound unless you specifically ask for them by name, and still others periodically announce their own name out loud at regular intervals whether or not you want them to do that:
 
-```
-topic:    location/first floor/00:11:22:33:44:55
-message:  {
-  retain: false
-  version : 0.1.666
-  address : 00:11:22:33:44:55
-  confidence : 100
-  name : Andrew's iPhone
-  timestamp : Fri Sep 28 2018 22:42:18 GMT+0000 (UTC)
-  manufacturer : Apple, Inc.
-  type : KNOWN_MAC
-}
-```
+![Second Picture](https://i.imgur.com/UwPJIMM.png)
 
-Got it? That's it. You're ready to scan for presence of those devices. With default settings, the script will affirmatively scan for the presence of these devices under three circumstances:
+Here's the problem. You can’t just shout “WHO’S HERE” because then everyone would say their name at the same time and you couldn’t tell anything apart. Similarly, for obvious reasons, you can't simply ask "WHO ISN'T HERE?" 
 
-* Arrival scan (i.e., current status of a device is 'away') upon receiving an advertisement from a previously-unseen device
+So, you take attendance like in a classroom. Everyone in the room responds **only** when their own name is shouted. 
 
-* Departure scan (i.e., current status of a device is 'home') after not hearing from a previously-seen device for a period of time 
+![Third Picture](https://i.imgur.com/VCW8AmH.png)
 
-* In response to an MQTT message posted to either of: `$mqtt_topicpath/scan/arrive` or `$mqtt_topicpath/scan/depart`
+So, one way to take attendance is to shout for each friend on a list by name, one at a time, repeatedly. Ask for someone, get a response, wait for a moment, and ask again. 
 
-The MQTT messages can be sent from any other device connected to the MQTT broker you have set up. Lastly, be sure to check out [advanced configurations](#advanced-configurations) below. To finish everything up, restart the service, log-out, and forget that it's working for you!
+Once a friend stops responding (for some period of time), you presume that he or she has left: 
 
-```
-sudo systemctl restart monitor.service
-exit
-```
-<h2>Smart Watch / Fitness Band / Bluetooth Beacon</h2>
+![Simple Loop](https://i.imgur.com/ijGw2qb.png)
 
-Generally, smartwatches, fitness bands, and bluetooth beacons advertise their presence without needing to know a mac address. However, unfortunately, all of these devices are a bit different and manufacturers change the way their devices advertise to promote their own proprietary hubs and applications. Some of these devices do not advertise publicly at all, which means that we'll need to to treat them like a cell phone, described above. Some of these devices ignore bluetooth LE advertising specifications and will be ignored as undetectable devices ... more on these devices later. 
+This technique should work just fine, but there's a minor problem. You're constantly shouting into the room, which means that it's difficult for you to hear quiet responses and it's difficult for other people to carry on conversations. What else can we do? Can we use those random sounds for anything? 
 
-Brass tacks, we have to do a bit of playing to detect beacons. The best thing to do for beacon detection is to use both the `-b` flag to detect iBeacons and the `-g` flag when running the script manually so that we can see the output. From there, we can figure out how to detect a specific beacon. 
+Yes! A smarter approach is to wait for an anonymous sound, *then* start asking whether a friend *you know isn't present* has just arrived:
 
-First, stop the service: 
+![Complex Loop](https://i.imgur.com/9Ugn27i.png)
 
-```
-sudo systemctl stop monitor.service
-```
+This way, you're not constantly asking the room for all of your friends. Efficient!
 
-Second, run the script manually with `-b -g` as options: 
+This technique is a very simplified description of how `montior` works for devices like cell phones (friends on a list) and beacons (announce a name out loud). This also gives an idea of how `monitor` uses anonymous sounds to reduce the number of times that it has to send inquiries into the Bluetooth environment. 
 
-```
-sudo bash monitor.sh -b -g
-```
+___
 
-Retreive your device that you want to track and bring it near. After a moment or two, you should see one of three things. First, you may see that your beacon is detected as an iBeacon with type APPLE_IBEACON. If this is the case, the `-b` flag is all you need to detect this beacon. Subscribe to the mqtt topic formatted as `$mqtt_topicpath/$mqtt_published/uuid-major-minor`. This will be printed in the logs, but may not in all cases be accompanied by a detected name:
+# *Oversimplified Technical Background*
 
-```
-topic:    location/first floor/00000000-0000-0000-0000-000000000000-4-12003 
-message:  {
-  retain: false
-  version : 0.1.666
-  address : 00000000-0000-0000-0000-000000000000-4-12003 
-  confidence : 100
-  name : Unresponsive Device
-  timestamp : Fri Sep 28 2018 22:44:25 GMT+0000 (UTC)
-  manufacturer : Unknown
-  type : APPLE_IEACON
-  rssi : -93 
-  power: [if available]
-  uuid: [if available]
-  major: [if available]
-  minor: [if available]
-  adv_data :  [if available]
-}
-```
+The Bluetooth Low Energy spec was designed to make connecting Bluetooth devices simpler for the user. No more pin codes, no more code verifications, no more “discovery mode” - for the most part. It was also designed to be more private than previous Bluetooth implementations. That said, it’s hard to maintain privacy when you want to be able to connect to an unknown device without intervention. 
 
-By subscribing to `location/first floor/00000000-0000-0000-0000-000000000000-4-12003`, presence of the iBeacon can be determined.
+## Name Requests
 
+A part of the Blueooth spec is a special function called a `name` request that asks another Bluetooth device to send back a human-readable name of itself. In order to send a `name` request, however, we need to know a private (unchanging) address of the target device. 
 
-A second thing you may see that your beacon is detected a GENERIC_BEACON. If this is the case, the `-g` flag is all you need to detect this beacon. For example, you may see:
+Issuing a `name` request to the same private mac address every few seconds is a reliable - albeit rudimentary - way of detecting whether that device is "**present**" (it responds to the `name` request) or "**absent**" (no response to the `name` request is received). However, issuing `name` requests too frequently (*e.g.*, every few seconds) uses quite a bit of 2.4GHz spectrum, which can cause interference with Wi-Fi or other wireless communications.
 
-```
-topic:    location/first floor/04:FE:00:00:00 
-message:  {
-  retain: false
-  version : 0.1.666
-  address : 04:FE:00:00:00 
-  confidence : 100
-  name : Unresponsive Device
-  timestamp : Fri Sep 28 2018 22:44:25 GMT+0000 (UTC)
-  manufacturer : Fihonest communication co.,Ltd
-  type : GENERIC_BEACON
-  rssi : -93 
-  adv_data :  [if available]
-}
-```
+Not all devices respond to `name` requests, however. For example, beacon devices do not respond. 
 
-By subscribing to `location/first floor/04:FE:00:00:00`, presence of the generic beacon can be determined.
+## Connectible Devices
 
-If you cannot see your beacon in either of these, find the mac address of your beacon and add it to the `known_beacon_addresses` file. Then, use the `-g` flag. 
+Blueooth devices that can exchange information with other devices (almost always) advertise a random/anonymous address that other devices can use to negotiate a secure connection and receive the first device's real, private, Bluetooth address. Using a random address in this way when publicly advertising prevents bad actors from tracking via passive Bluetooth monitoring. 
 
-To update the service with these options, you can use the `-u` flag:
+## Beacon/Advertising Devices
 
-``` sudo bash monitor.sh -b -g -u```
+The Bluetooth spec has been used by Apple, Google, and others to create additional standards (e.g., iBeacon, Eddystone, and so on). These devices generally don't care to connect to other devices, so use of random/anonymous addresses doesn't really matter. Instead, these devices encode additional information into each advertisement of an anonymous address. For example, iBeacon devices will broadcast a UUID that conforms to the 8-4-4-4-12 format defined by [IETC RFC4122](http://www.ietf.org/rfc/rfc4122.txt).
 
-Got it? That's it. You're ready to listen for presence of your beacon. With either or both the `-b` or `-g` flag, the script will passively monitor for the presence of these devices and if the device is not heard from for a certain time period, confidence will drop, eventually to zero. Lastly, be sure to check out [advanced configurations](#advanced-configurations) below. To finish everything up, restart the service, log-out, and forget that it's working for you!
+As noted above, most beacons do not respond to `name` requests, even if made to the device's private Bluetooth address. So, issuing periodic `name` requests to beacons is not a good way to detect whether a beacon device is **present** or **absent**. However, monitoring for beacon advertisement is a reliable way to detect whether a beacon device is **present** or **absent**.
 
-```
-sudo systemctl restart monitor.service
-exit
-```
+_____
 
-<h2>Advanced Configurations</h2>
+# *How `monitor` Works*
 
-One of the benefits of `monitor` is configurability. In addition to the runtime options that are explained in the helpfile reproduced above, the `behavior_preferences` file is included to modify the behavior of `monitor`. What follows is a more detailed explaination of these options: 
+This script combines `name` requests, anonymous advertisements, and beacon advertisements to logically determine (1) *when* to issue a `name` request to determine whether a device is **present** and (2) *when* to issue a `name` request to determine whether a device is **absent**. The script also listens for beacons. 
 
-```
-#DELAY BETWEEN SCANS OF DEVICES
-PREF_INTERSCAN_DELAY=3
-```
+##### Known Static Addresses
+`monitor` uses unchanging/static mac addresses for your devices that you have added to a file called `known_static_addresses`. These are the addresses for which `monitor` will issue `name` requests to determine whether or not these devices are **present** or **absent**. 
 
-This option is the delay in seconds between each affirmative name scan in a sequence of name scans. This applies only to scanning for cell phones/devices in the `known_static_addresses` file. The larger this number, the longer on average arrival detection will take but, also, the lower interference with 2.4GHz spectrum should be expected. 
+Once a determination of presence is made, the script posts to an mqtt topic path defined in a file called `mqtt_preferences` that includes a JSON-formatted message with a confidence value that corresponds to a confidence of presence. For example, a confidence of 100 means that `monitor` is 100% sure the device is present. Similarly, a confidence of 0 means that `monitor` is 0% sure the device is present (*i.e.*, the `monitor` is 100% sure the device is absent).
 
+To minimize the number of times that `monitor` issues `name` requests (thereby reducing 2.4GHz interference), the script performs either an ***ARRIVAL*** scan or a ***DEPART*** scan, instead of scanning all devices listed in the `known_static_addresses` each time.  
 
-```
-#DETERMINE HOW OFTEN TO CHECK FOR A DEPARTED DEVICE OR AN ARRIVED DEVICE
-PREF_CLOCK_INTERVAL=15
-```
-This is the interval, when scanning in periodic scanning mode, at which the script checks to see if an arrival scan or a deparature scan is necessary. 
+More specifically:
 
-```
-#DEPART SCAN INTERVAL
-PREF_DEPART_SCAN_INTERVAL=90
+*  An ***ARRIVAL*** scan issues a `name` request, sequentially, for each device listed in the `known_static_addresses` file that is known to be **absent**. 
+
+*  Similarly, a ***DEPART*** scan issues a `name` request, sequentially, for each device listed in the `known_static_addresses` file that is known to be **present**. 
+
+For example, if there are two phone addresses listed in the `known_static_addresses` file, and both of those devices are **present**, an ***ARRIVAL*** scan will never occur. Similarly, if both of these addresses are **absent** then a ***DEPART*** scan will never occur. If only one device is present, an **ARRIVAL** scan will only scan for the device that is currently away. 
+
+To reduce the number of `name` requests that occur, `monitor` listens for anonymous advertisements and triggers an ***ARRIVAL*** scan for every *new* anonymous address. 
+
+The script will also trigger an ***ARRIVE*** scan in response to an mqtt message posted to the topic of `monitor/scan/arrive`. Advertisement-triggered scanning can be disabled by using the trigger argument if `-ta`, which causes `monitor` to *only* trigger ***ARRIVAL*** scans in response to mqtt messages. 
+
+If `monitor` has not heard from a particular anonymous address in a long time, `monitor` triggers a ***DEPART*** scan. The script will also trigger a ***DEPART*** scan in response to an mqtt message posted to the topic of `monitor/scan/depart`. Expiration-triggered scanning can be disabled by using the trigger argument if `-td`, which causes `monitor` to *only* trigger ***DEPART*** scans in response to mqtt messages. 
+
+To reduce scanning even further, `monitor` can filter which types of anonymous advertisements are used for ***ARRIVE*** scans. These are called "filters" and are defined in a file called `behavior_preferences`. The filters are bash RegEx strings that either pass or reject anonymous advertisements that match the filter. 
+
+There are two filter types: 
+
+* **Manufacturer Filter** - filters based on data in an advertisement that is connected to a particular device manufacturer. This is almost always the OEM of the device that is transmitting the anonymous advertisement. By default, because of the prevalence of iPhones, Apple is the only manufacturer that triggers an ***ARRIVAL*** scan. Multiple manufacturers can be appended together by a pipe: `|`. An example filter for Apple and Samsung looks like: `Apple|Samsung`. To disable the manufacturer filter, use `.*`.
+
+* **Flag Filter:** filters based on flags contained in an advertisement. This varies by device type. By default, because of the prevalence of iPhones, the flag of `0x1b` triggers an ***ARRIVAL*** scan. Like with the manufacturer filter, multiple flags can be appended together by a pipe: `|`. To disable the manufacturer filter, use `.*`.
+
+##### Beacons & iBeacons
+In addition, when run with the `-b` beacon argument, `monitor` listens for beacon advertisements that report themselves as "public", meaning that their addresses will not change. The script can track these by default; these addresses do not have to be added anywhere - after all, `monitor` will obtain them just by listening. 
+
+Since iBeacons include a UUID and a mac address, two presence messages are reported via mqtt. 
+
+## Known Beacon Addresses
+In some cases, manufacturers try to get sneaky and cause their beacons to advertise as "anonymous" (or "random") devices, despite that their addresses do not change at all. By default, `monitor` does not report presence of anonymous advertisement devices, so to force `monitor` to recognize these devices, we add the "random" address to a file called `known_static_beacons`. After restarting, `monitor` will know that these addresses should be treated like a normal beacon. 
+___
+
+</details>
+
+<details><summary><b>Home Assistant Example</b></summary>
+
+# Example with Home Assistant
+
+Personally, I have four **raspberry pi zero w**s throughout the house and garage. My family spends most of our time on the first floor, so our main `monitor` node or sensor is on the first floor. Our other 'nodes' on the second and third floor and garage are set up for triggered use only - these will scan for ***ARRIVAL*** and ***DEPART*** only in response to mqtt messages, with option ```-tad```. The first floor node is set up to send mqtt arrive/depart scan instructions to these nodes by including the `-tr` flag ("report" to other nodes when an arrival or depart scan is triggered). 
+
+The first floor constantly monitors for beacons (`-b`) advertisements and anonymous advertisements, which may be sent by our phones listed in the `known_static_addresses` file. In response to a new anonymous advertisement, `monitor` will initiate an ***ARRIVAL*** scan for whichever of our phones is not present.  If one of those devices is seen, an mqtt message is sent to Home Assistant reporting that the scanned phone is "home" with a confidence of 100%. In addition, an mqtt message is sent to the second and third floor and garage to trigger a scan on those floors as well. As a result of this configuration, when we leave the house, we use either the front door or the garage door to trigger an mqtt trigger of ```monitor/scan/depart``` after a ten second delay to trigger a departure scan of our devices that were previously known to be present. The ten second delay gives us a chance to get out of Bluetooth range before a "departure" scan is triggered. Different houses/apartments will probably need different delays. 
+
+More specifically, each of these `monitor` nodes uses the same name for each device so that states can be tracked easily by Home Assistant. For example, on each node, my `known_static_addresses` file looks like this (note that 00:00:00:00:00:00 is an example address - this should be your phone's private, static, Bluetooth address): 
+
+```bash
+00:00:00:00:00:00 alias #comment that is ignored
 ```
 
-This is the interval, when running in periodic scanning mode, at which departure scans should be performed. 
+The address I want to track is separated by a space from the *alias* that I want to use to refer to this device in Home Assistant. If you prefer to use the address instead of an alias, set the value `PREF_ALIAS_MODE=false` in your `behavior_preferences` file.
 
-
-```
-#ARRIVE SCAN INTERVAL
-PREF_ARRIVE_SCAN_INTERVAL=45
-```
-
-
-This is the interval, when running in periodic scanning mode, at which arrival scans should be performed. 
+In this manner, [Home Assistant](https://www.home-assistant.io) receives mqtt messages and stores the values as input to a number of [mqtt sensors](https://www.home-assistant.io/components/sensor.mqtt/). Output from these sensors is combined to give an accurate numerical occupancy confidence:
 
 ```
-#MAX RETRY ATTEMPTS FOR ARRIVAL
-PREF_ARRIVAL_SCAN_ATTEMPTS=3
+- platform: mqtt
+  state_topic: 'monitor/first floor/alias'
+  value_template: '{{ value_json.confidence }}'
+  unit_of_measurement: '%'
+  name: 'First Floor'
+
+- platform: mqtt
+  state_topic: 'monitor/second floor/alias'
+  value_template: '{{ value_json.confidence }}'
+  unit_of_measurement: '%'
+  name: 'Second Floor'
+
+- platform: mqtt
+  state_topic: 'monitor/third floor/alias'
+  value_template: '{{ value_json.confidence }}'
+  unit_of_measurement: '%'
+  name: 'Third Floor'
+
+- platform: mqtt
+  state_topic: 'monitor/garage/alias'
+  value_template: '{{ value_json.confidence }}'
+  unit_of_measurement: '%'
+  name: 'Garage'
 ```
 
-This is the number of times a device should be scanned for an arrival each time an arrival scan operation is performed. This applies only to scanning for cell phones/devices in the `known_static_addresses` file. As soon as the device is detected, all other enqueued scans are discarded. 
+These sensors can be combined using a [min_max](https://www.home-assistant.io/components/sensor.min_max/):
 
 ```
-#MAX RETRY ATTEMPTS FOR DEPART
-PREF_DEPART_SCAN_ATTEMPTS=3
+- platform: min_max
+  name: "Home Occupancy Confidence"
+  type: max
+  round_digits: 0
+  entity_ids:
+    - sensor.third_floor
+    - sensor.second_floor
+    - sensor.first_floor
+    - sensor.garage
 ```
 
-This is the number of times a device should be scanned for departure each time a departure scan operation is performed. This applies only to scanning for cell phones/devices in the `known_static_addresses` file. As soon as the device is detected as present, all other enqueued depart scans are discarded. 
+Thereafter, I use the entity **sensor.home_occupancy_confidence** in automations to control the state of an **input_boolean** that represents a very high confidence of a user being home or not. 
 
-
-```
-#DETERMINE NOW OFTEN TO REFRESH DATABASES TO REMOVE EXPIRED DEVICES
-PREF_DATABASE_REFRESH_INTERVAL=35
-```
-
-This is the interval at which the database of beacons and random devices that have been marked as "seen" by the script is checked for and cleared of expired device (i.e., devices that have not been seen for an interval).
-
+As an example:
 
 ```
-#PERIOD AFTER WHICH A RANDOM BTLE ADVERTISEMENT IS CONSIDERED EXPIRED
-PREF_RANDOM_DEVICE_EXPIRATION_INTERVAL=45
-```
-This is the interval after which a randomly-advertising device will be marked as expired. 
+- alias: Occupancy On
+  hide_entity: true
+  trigger:
+    - platform: numeric_state
+      entity_id: sensor.home_occupancy_confidence
+      above: 10
+  action:
+    - service: input_boolean.turn_on
+      data:
+        entity_id: input_boolean.occupancy
 
-```
-#AMOUNT AN RSSI MUST CHANGE (ABSOLUTE VALUE) TO REPORT BEACON AGAIN
-PREF_RSSI_CHANGE_THRESHOLD=5
-```
-
-This is the threshold for reporting an rssi change in the logs. 
-
-
-```
-#BLUETOOTH ENVIRONMENTAL REPORT FREQUENCY
-PREF_ENVIRONMENTAL_REPORT_INTERVAL=300
-```
-
-This is the average interval at which a bluetooth environment report is sent to the MQTT broker. 
-
-```
-#SECONDS UNTIL A BEACON IS CONSIDERED EXPIRED
-PREF_BEACON_EXPIRATION=145
+- alias: Occupancy Off
+  hide_entity: true
+  trigger:
+    - platform: numeric_state
+      entity_id: sensor.home_occupancy_confidence
+      below: 10
+  action:
+    - service: input_boolean.turn_off
+      data:
+        entity_id: input_boolean.occupancy
 ```
 
-This is the interval after which a beacon device will be marked as expired. 
+If you prefer to use the `device_tracker` platform in Home Assistant, a unique solution is to use the undocumented `device_tracker.see` service:
 
-
-```
-#SECONDS AFTER WHICH A DEPARTURE SCAN IS TRIGGERED
-PREF_PERIODIC_FORCED_DEPARTURE_SCAN_INTERVAL=360
-```
-This is the interval at which a forced periodic departure scan is performed. 
+As an example:
 
 ```
-#PREFERRED HCI DEVICE
-PREF_HCI_DEVICE='hci0'
+- alias: Andrew Occupancy On
+  hide_entity: true
+  trigger:
+    - platform: numeric_state
+      entity_id: sensor.andrew_occupancy_confidence
+      above: 10
+  action:
+    - service: device_tracker.see
+      data:
+        dev_id: andrew
+        location_name: home
+        source_type: bluetooth
+
+- alias: Andrew Occupancy Off
+  hide_entity: true
+  trigger:
+    - platform: numeric_state
+      entity_id: sensor.andrew_occupancy_confidence
+      below: 10
+  action:
+    - service: device_tracker.see
+      data:
+        dev_id: andrew
+        location_name: not_home
+        source_type: bluetooth
+
 ```
 
-This is the preferred bluetooth device. 
+For more information, see [here](https://community.home-assistant.io/t/device-tracker-from-script/97295/7) and [here](https://github.com/andrewjfreyer/monitor/issues/138).
+
+If you only have one node, an [add-on](https://github.com/Limych/hassio-addons) by @limych may be an excellent choice for you!
+
+</details>
+
+<details><summary><b>Advanced Configuration Options & Fine Tuning</b></summary>
+
+
+## Fine Tuning
+
+
+1. Observe output from `monitor` to tune filters:
+
+```bash
+sudo bash monitor.sh 
+```
+
+Observe the output of the script for debug log [CMD-RAND] lines including [failed filter] or [passed filter]. These lines show what anonymous advertisement `monitor` sees and how `monitor` filters those advertisements. In particular, cycle the Bluetooth power on your phone or another device and look at the `flags` value, the `pdu` value, and the `man` (manufacturer) value that appears after you turn Bluetooth power back on. Remember, the address you see in the log will be an anonymous address - ignore it, we're only focused on the values referenced above. 
 
 ```
-#COOPERATIVE DEPARTURE SCAN TRIGGER THRESHOLD
-PREF_COOPERATIVE_SCAN_THRESHOLD=25
+0.1.xxx 03:25:39 pm [CMD-RAND]  [passed filter] data: 00:11:22:33:44:55 pdu: ADV_NONCONN_IND rssi: -73 dBm flags: 0x1b man: Apple, Inc. delay: 4
 ```
 
-This is the threshold at which a 'depart' message is sent to other `montior` instances. This applies only to scanning for cell phones/devices in the `known_static_addresses` file. For example, if a first node believes that a device has left (confidence is falling quickly to zero), then this device will trigger other `monitor` nodes by publishing to `$mqtt_topicpath/scan/depart` once confidence hits or falls below this level.  
+If you repeatedly see the same values in one or more of these fields, consider adding a PASS filter condition to the `behavior_preferences` file. This will cause `monitor` to *only* scan in response to an anonymous advertisement that passes the filter condition that you define. For example, if you notice that Apple always shows up as the manufacturer when you cycle the power on you phone, you can create an Apple filter:
+
+```bash
+PREF_PASS_FILTER_MANUFACTURER_ARRIVE="Apple"
+```
+
+If you have two phones, and one is **Apple** and the other is **Google**, create a `bash` or statement in the filter like this: 
+
+```bash
+PREF_PASS_FILTER_MANUFACTURER_ARRIVE="Apple|Google"
+```
+
+If your phone shows as **Unknown**, then it is best to disable the filter entirely - some phones will report a blank manufacturer, others will report a null value... it's much easier to try and filter with another value:
+
+```bash
+PREF_PASS_FILTER_MANUFACTURER_ARRIVE=".*"
+```
+
+Similarly, we can create a negative filter. If you or your neighbors use Google Home, it is likely that you'll see at least some devices manufactured by **Google**. Create a fail filter condition to ignore these advertisements: 
+
+```bash
+PREF_FAIL_FILTER_MANUFACTURER_ARRIVE="Google"
+```
+
+Filters are a great way to minimize the frequency of `name` requestning, which causes 2.4GHz interference and can, if your values are too aggressive, dramatically interfere with Wi-Fi and other services. 
+
+2. **Standard configuration options:**
+
+When `monitor` is first run, default preferences are created in the `behavior_preferences` file. These preferences can be changed, and in many cases should be changed depending on your Bluetooth environment (how many devices you have around you at any given time). A table below describes what these default variables are:  
+
+| **Option** | **Default Value** | **Description** |
+|-|-|-|
+| PREF_ARRIVAL_SCAN_ATTEMPTS | 1 | This is the number of times that `monitor` will send a name request before deciding that a device has not yet arrived. The higher the number, the fewer errors on arrival detection but also the longer it may take to recognize all devices are home in a multi-device installation. |
+| PREF_DEPART_SCAN_ATTEMPTS | 2 | This is the number of times that `monitor` will send a name request before deciding that a device has not yet departed. The higher the number, the fewer errors on departure detection but also the longer it may take to recognize all devices are away in a multi-device installation. |
+| PREF_BEACON_EXPIRATION | 180 | This is the number of seconds without observing an advertisement before a beacon is considered expired. |
+| PREF_MINIMUM_TIME_BETWEEN_SCANS | 15 | This is the minimum number of seconds required between "arrival" scans or between "departure" scans. Increasing the value will decrease interference, but will also increase arrival and departure detection time. |
+| PREF_PASS_FILTER_ADV_FLAGS_ARRIVE | .* | See above. |
+| PREF_PASS_FILTER_MANUFACTURER_ARRIVE | .* | See above. |
+| PREF_FAIL_FILTER_ADV_FLAGS_ARRIVE | NONE | See above. |
+| PREF_FAIL_FILTER_MANUFACTURER_ARRIVE | NONE | See above. |
+| PREF_ALIAS_MODE | true | Disable or enable alias mode; if disabled, MQTT messages are sent using a device's mac address. |
+
+3. **Advanced configuration options:**
+
+In addition to the options described above, there are a number of advanced options that can be set by the user. To modify any of these options, add a line to the `behavior_preferences` file. 
+
+
+| **Option** | **Default Value** | **Description** |
+|-|-|-|
+PREF_INTERSCAN_DELAY|3|This is a fixed delay between `name` requests. Increasing the value will decrease interference, but will decrease responsiveness. Decreasing the value will risk a Bluetooth hardware fault.|
+PREF_RANDOM_DEVICE_EXPIRATION_INTERVAL|75|This is the interval after which an anonymous advertisement mac address is considered expired. Increasing this value will reduce arrival scan frequency, but will also increase memory footprint (minimal) and will decrease the frequency of depart scans.|
+PREF_RSSI_CHANGE_THRESHOLD|-20|If a beacon's rssi changes by at least this value, then the beacon will be reported again via mqtt.|
+PREF_RSSI_IGNORE_BELOW|-75|If an anonymous advertisement is "farther" away (lower RSSI), ignore the advertisement
+PREF_HCI_DEVICE|hci0|Select which hci device should be used by `monitor`|
+PREF_COOPERATIVE_SCAN_THRESHOLD|60|Once confidence of a known device falls below this value, send an mqtt message to other `monitor` nodes to begin an arrival scan or a departure scan.|
+PREF_MQTT_REPORT_SCAN_MESSAGES|false|This value is either true or false and determines whether `monitor` publishes when a scan begins and when a scan ends|
+PREF_PERCENT_CONFIDENCE_REPORT_THRESHOLD|59|This value defines when a beacon begins reporting a decline in confidence|
+PREF_PASS_FILTER_PDU_TYPE|*Various. See FAQ.*|These are the PDU types that should be noticed by `monitor`|
+PREF_DEVICE_TRACKER_REPORT|false|If true, this value will cause `monitor` to report a 'home' or 'not_home' message to `... /device_tracker` conforming to device_tracker mqtt protocol. 
+PREF_DEVICE_TRACKER_HOME_STRING|home|If `PREF_DEVICE_TRACKER_REPORT` is true, this is the string that is reported to the device_tracker when the device is home.
+PREF_DEVICE_TRACKER_AWAY_STRING|not_home|If `PREF_DEVICE_TRACKER_REPORT` is true, this is the string that is reported to the device_tracker when the device is not home.
+PREF_DEVICE_TRACKER_TOPIC_BRANCH|device_tracker|If `PREF_DEVICE_TRACKER_REPORT` is true, this is last path element of the mqtt topic path that will be used to publish the device tracker message.
+PREF_ADVERTISEMENT_OBSERVED_INTERVAL_STEP|15|This is the minimum interval (in seconds) used to estimate advertisement intervals reported in the MQTT message.
+PREF_DEPART_SCAN_INTERVAL|30|If using periodic scanning mode, this is the minimum interval (in seconds) at which depart scans are triggered automatically. 
+PREF_ARRIVE_SCAN_INTERVAL|15|If using periodic scanning mode, this is the minimum interval (in seconds) at which arrive scans are triggered automatically. 
+
+
+## RSSI Tracking
+
+This script can also track RSSI changes throughout the day. This can be used for very rudimentary room- or floor-level tracking. Only devices in `known_static_addresses` that have been paired to a `monitor` node can have their RSSI tracked. Here's how to pair: 
+
+1. Stop `monitor` service:
+
+```bash
+sudo systemctl stop monitor
+```
+
+2. Run `monitor` with `-c` flag, followed by the mac address of the known_device to connect:
+
+```bash
+sudo bash monitor.sh -c 00:11:22:33:44:55
+```
+
+After this, follow the prompts given by `monitor` and your device will be connected. That's it. After you restart monitor will periodically (once every ~1.5 minutes) connect to your phone and take three RSSI samples, average the samples, and report a string message to the same path as a confidence report, with the additional path component of */rssi*. So, if a `monitor` node is named 'first floor', an rssi message is reported to:
+
+```bash 
+topic: monitor/first floor/00:11:22:33:44:55/rssi
+message: -99 through 0
+```
+
+If an rssi measurement cannot be obtained, the value of -99 is sent. 
+
+## Report known states
+
+It is also possible tell monitor to report all currently known device states by sending an MQTT message to something like `monitor/first floor/KNOWN DEVICE STATES`. monitor.sh will then iterate over all known static addresses and report the current confidence level. This may be useful in home assistant to get the current state after a home assistant restart.
+
+</details>
+
+Anything else? Post a [question.](https://github.com/andrewjfreyer/monitor/issues/new)

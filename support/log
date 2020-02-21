@@ -17,30 +17,26 @@
 # PRETTY PRINT FOR DEBUG
 # ----------------------------------------------------------------------------------------
 
-#COLOR OUTPUT FOR RICH OUTPUT 
-ORANGE=$'\e[1;33m'
-RED=$'\e[1;31m'
-NC=$'\e[0m'
-GREEN=$'\e[1;32m'
-PURPLE=$'\e[1;35m'
-BLUE=$'\e[1;34m'
-CYAN=$'\e[1;36m'
-REPEAT=$'\e[1A'
-
 #VARIABLES FOR LOGGING LOGSPAM PREVENTION
 last_log_line=""
 duplicate_log_count=1
+launch_flag=""
+
+#LOGGING FLAG TO DISTINGUISH SERVICE-LAUNCHED 
+#LOGGS FROM CONSOLE LOGGED LAUNCHES
+$SERVICE_ACTIVE && launch_flag="[+]" || launch_flag="[-]"
 
 #FORK THE LOG FROM THE MAIN THREAD 
 log_listener () {
+
 	#LOG PIPE
 	while true; do 
+		#SHOULD EXIT? 
+		[ "$PREF_DISABLE_LOGGING" == true ] && return 0 
+		
 		#READ FROM THE MAIN PIPE
 		local line 
 		while read line; do 
-
-			#REPLACE NEWLINE TAGS
-			line=$(echo "$line" | sed 's/<br>/\n/g;s/<p>/\t/g')
 
 			#ECHO TO CONSOLE, REMOVING EXTRA SPACES	
 			should_repeat=""
@@ -49,20 +45,17 @@ log_listener () {
 			#IS THIS LINE DUPLICATED?
 			if [ "$last_log_line" == "$line" ] ; then 
 				duplicate_log_count=$((duplicate_log_count + 1 ))
-				line_append=" (x$duplicate_log_count)"
-				should_repeat=$REPEAT
-
 			else 
 				duplicate_log_count=1
 			fi  
 
 			if [ "$PREF_REDACT" == true ]; then 
-				line=$(echo "$line" | sed "s/\([0-9A-Fa-f]\{2\}:\)\{5\}/ [REDACTED]:/g;s/\([0-9A-Fa-f-]\{36\}\)/ [REDACTED]/g" )
+				line=$(echo "$line" | sed "s/\([0-9A-Fa-f]\{2\}:\)\{5\}/ [REDACTED]:/gi;s/\([0-9A-Fa-f-]\{36\}\)/ [REDACTED]/gi" )
 				line="$line"
 			fi 
 
 			#ECHO LAST LINE
-			printf "${should_repeat}$version $(date "+%I:%M:%S %p") $line$line_append\n"
+			printf "%s\n" "$launch_flag $version $(date "+%d-%m-%Y %I:%M:%S %p") $line"
 			last_log_line="$line"
 
 		done < log_pipe
@@ -73,5 +66,5 @@ log_listener () {
 #PRINT TO LOG UNLESS DUPLICATE LINE
 log() {
 	#SEND TO LOG PIPE
-	echo "$1" | sed 's/  */ /g' > log_pipe
+	[ "$PREF_DISABLE_LOGGING" == false ] && printf "$1\n" | sed 's/  */ /g' > log_pipe
 }
